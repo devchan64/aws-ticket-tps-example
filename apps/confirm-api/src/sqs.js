@@ -1,4 +1,59 @@
+/**
+ * apps/confirm-api/src/sqs.js
+ */
+// ESM (package.json: { "type": "module" })
+import crypto from "crypto";
 import AWS from "aws-sdk";
-const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
-export const sqs = new AWS.SQS({ region });
-export const QURL = process.env.SQS_URL; // dataplane.json에서 주입됨(02_task_defs.sh)
+import { v4 as uuidv4 } from "uuid";
+
+const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "ap-northeast-1";
+export const QURL = process.env.SQS_URL;
+const SHARDS = parseInt(process.env.SQS_GROUP_SHARDS || "1024", 10);
+
+if (!QURL) throw new Error("[confirm-api] SQS_URL is not set");
+
+AWS.config.update({ region: REGION });
+const sqs = new AWS.SQS({ apiVersion: "2012-11-05", region: REGION });
+
+/** 고정 샤딩 그룹: key(주문/의도/멱등키) → 0..N-1 */
+function groupIdFor(key) {
+  const h = crypto.createHash("sha1").update(String(key)).digest();
+  const n = h.readUInt32BE(0);
+  return `g-${n % SHARDS}`;
+}
+
+/** 기본 중복 방지 ID (비즈니스 멱등 키가 있다면 그 키 사용 권장) */
+function dedupId(base) {
+  return `${base}-${uuidv4()}`;
+}
+
+/** 단건 전송 */
+export async function enqueueOne(payload, groupKey, dedupBase = groupKey) {
+  const params = {
+    QueueUrl: QURL,
+    MessageBody: JSON.stringify(payload),
+    MessageGroupId: groupIdFor(groupKey),     // ★ 샤딩된 그룹
+    MessageDeduplicationId: dedupId(dedupBase)
+  };
+  await sqs.sendMessage(params).promise();
+}
+
+/** 최대 10개 배치 전송 */
+export async function enqueueBatch(items, groupKeyFn) {
+  if (!Array.isArray(items) || !items.length) return;
+  for (let i = 0; i < items.length; i += 10) {
+    const chunk = items.slice(i, i + 10);
+    const Entries = chunk.map((p, idx) => {
+      const gk = groupKeyFn(p);
+      return {
+        Id: String(idx),
+        MessageBody: JSON.stringify(p),
+        MessageGroupId: groupIdFor(gk),
+        MessageDeduplicationId: dedupId(gk)
+      };
+    });
+    await sqs.sendMessageBatch({ QueueUrl: QURL, Entries }).promise();
+  }
+}
+
+export { sqs }; // 필요 시 원시 클라이언트도 사용 가능

@@ -7,12 +7,16 @@ source "${ROOT}/env.sh"
 PRIMARY_REGION="${REGIONS[0]}"
 OUTDIR="${ROOT}/infra/out/${PRIMARY_REGION}"
 ALB_DNS=$(jq -r .DNSName "${OUTDIR}/alb.json")
-
-if [[ -z "$ALB_DNS" || "$ALB_DNS" == "null" ]]; then
-  echo "ALB DNS not found. Run 03_alb_services.sh first."; exit 1
+L443=$(jq -r '.Listener443 // empty' "${OUTDIR}/alb.json" 2>/dev/null || true)
+ORIGIN_PROTOCOL="https-only"
+if [[ -z "$L443" || "$L443" == "null" ]]; then
+  ORIGIN_PROTOCOL="http-only"
 fi
 
-# 최소 캐시 정책 (기본 동작)
+if [[ -z "$ALB_DNS" || "$ALB_DNS" == "null" ]]; then
+  echo "ALB DNS not found. Run 05_alb_services.sh first."; exit 1
+fi
+
 cat > "${ROOT}/infra/out/cf-cache-minimal.json" <<JSON
 {
   "Name": "ticket-cache-minimal",
@@ -32,7 +36,6 @@ if [[ -z "$POLICY_ID" ]]; then
     --query 'CachePolicy.Id' --output text)
 fi
 
-# /public 전용 캐시 정책
 cat > "${ROOT}/infra/out/cf-cache-public.json" <<JSON
 {
   "Name": "ticket-cache-public",
@@ -52,7 +55,6 @@ if [[ -z "$PUB_POLICY_ID" ]]; then
     --query 'CachePolicy.Id' --output text)
 fi
 
-# 응답 헤더 정책 (보안 헤더 + Server-Timing)
 HDR_POLICY_ID=$(aws cloudfront list-response-headers-policies --type custom --query 'ResponseHeadersPolicyList.Items[?ResponseHeadersPolicy.ResponseHeadersPolicyConfig.Name==`ticket-hdr`].ResponseHeadersPolicy.Id' --output text 2>/dev/null || true)
 if [[ -z "$HDR_POLICY_ID" ]]; then
   HDR_POLICY_ID=$(aws cloudfront create-response-headers-policy --response-headers-policy-config '{
@@ -67,7 +69,6 @@ if [[ -z "$HDR_POLICY_ID" ]]; then
   }' --query 'ResponseHeadersPolicy.Id' --output text)
 fi
 
-# 배포 생성 (기본 + /public/* behavior)
 aws cloudfront create-distribution --distribution-config "{
   \"CallerReference\": \"ticket-$(date +%s)\",
   \"Enabled\": true,
@@ -76,7 +77,7 @@ aws cloudfront create-distribution --distribution-config "{
     \"Items\": [{
       \"Id\": \"ticket-alb\",
       \"DomainName\": \"${ALB_DNS}\",
-      \"CustomOriginConfig\": {\"HTTPPort\":80,\"HTTPSPort\":443,\"OriginProtocolPolicy\":\"https-only\"}
+      \"CustomOriginConfig\": {\"HTTPPort\":80,\"HTTPSPort\":443,\"OriginProtocolPolicy\":\"${ORIGIN_PROTOCOL}\"}
     }],
     \"Quantity\": 1
   },

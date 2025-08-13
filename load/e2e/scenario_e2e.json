@@ -1,0 +1,15 @@
+{
+  "base": {
+    "public": "https://<ALB_OR_CF_DNS>",
+    "confirm": "https://<ALB_OR_CF_DNS>"
+  },
+  "eventId": "EVT",
+  "seatsPool": 10000,
+  "vus": 100,
+  "durationSec": 60,
+  "ramp": [
+    { "atSec": 0,  "rps": 1000 },
+    { "atSec": 20, "rps": 3000 },
+    { "atSec": 40, "rps": 6000 }
+  ]
+}

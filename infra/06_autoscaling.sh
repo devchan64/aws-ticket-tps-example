@@ -4,7 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/env.sh"
 source "${ROOT}/infra/out/.env.generated"
 
-# Build ALB resource label: app/<lb-name>/<lb-id>/targetgroup/<tg-name>/<tg-id>
 alb_resource_label () {
   local REGION="$1"; local TG_ARN="$2"
   local TG=$(aws elbv2 describe-target-groups --target-group-arns "$TG_ARN" --region "$REGION" --profile "$AWS_PROFILE")
@@ -19,7 +18,6 @@ for REGION in "${REGIONS[@]}"; do
   echo "=== [$REGION] Application Auto Scaling ==="
   CLUSTER="ticket-${REGION}"
 
-  # CPU TargetTracking (둘 다)
   for SVC in ticket-public-svc ticket-confirm-svc; do
     aws application-autoscaling register-scalable-target \
       --service-namespace ecs \
@@ -42,12 +40,10 @@ for REGION in "${REGIONS[@]}"; do
       --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
   done
 
-  # ALB 기반 추가 정책 (public 전용 예시)
   OUT="${ROOT}/infra/out/${REGION}/alb.json"
   TG_PUBLIC=$(jq -r .TGPublic "$OUT")
   RESLABEL_PUBLIC=$(alb_resource_label "$REGION" "$TG_PUBLIC")
 
-  # 타겟당 RPS (ALBRequestCountPerTarget)
   aws application-autoscaling put-scaling-policy \
     --service-namespace ecs \
     --resource-id service/${CLUSTER}/ticket-public-svc \
@@ -64,7 +60,6 @@ for REGION in "${REGIONS[@]}"; do
     }" \
     --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
 
-  # p95 지연 급등 시 StepScaling (TargetResponseTime > 0.2s)
   POL_ARN=$(aws application-autoscaling put-scaling-policy \
     --service-namespace ecs \
     --resource-id service/${CLUSTER}/ticket-public-svc \
@@ -83,7 +78,6 @@ for REGION in "${REGIONS[@]}"; do
     --alarm-actions "$POL_ARN" \
     --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
 
-  # worker: SQS backlog 기반 TT + oldest age step
   aws application-autoscaling register-scalable-target \
     --service-namespace ecs \
     --resource-id service/${CLUSTER}/ticket-worker-svc \

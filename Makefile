@@ -1,67 +1,66 @@
+# Makefile
 SHELL := /usr/bin/env bash
-.DEFAULT_GOAL := all
+.PHONY: help all 00-network 01-ecr 02-cluster 03-dataplane 04-taskdefs 05-services 06-autoscaling 07-cloudfront 08-db-init clean-stamps
 
-ENV_FILE := infra/out/.env.generated
-
-.PHONY: all help \
-        network cluster taskdefs alb services autoscaling dataplane cloudfront \
-        load-start load-report \
-        _need_env
+ROOT := $(shell pwd)
+STAMPS := .stamps
+ENV := $(ROOT)/env.sh
 
 help:
-	@echo "Usage:"
-	@echo "  make all            # network -> cluster -> taskdefs -> services -> autoscaling -> dataplane -> cloudfront"
-	@echo "  make network        # VPC/Subnets/NAT/SG bootstrap"
-	@echo "  make cluster        # ECS cluster, roles, log groups"
-	@echo "  make taskdefs       # Register task definitions"
-	@echo "  make alb            # Create ALB, TGs, listeners"
-	@echo "  make services       # Create ECS services (depends on 'alb')"
-	@echo "  make autoscaling    # Apply Application Auto Scaling policies"
-	@echo "  make dataplane      # Create SQS/DynamoDB, etc."
-	@echo "  make cloudfront     # Create CloudFront distribution"
-	@echo "  make load-start     # Launch EC2 load workers"
-	@echo "  make load-report    # Collect results and write report"
+	@echo "Execution order:"
+	@echo "  00-network    -> VPC, Subnet, SG, Route, NAT"
+	@echo "  01-ecr        -> ECR repos + build & push images"
+	@echo "  02-cluster    -> ECS cluster, IAM roles, log groups"
+	@echo "  03-dataplane  -> SQS, DynamoDB, (Redis), (Aurora)"
+	@echo "  04-taskdefs   -> ECS Task Definitions (3 services)"
+	@echo "  05-services   -> ALB, TG, Listeners, ECS Services"
+	@echo "  06-autoscaling-> Application Auto Scaling policies"
+	@echo "  07-cloudfront -> CloudFront distribution"
+	@echo "  08-db-init    -> Apply DB schema to Aurora"
+	@echo ""
+	@echo "Run 'make all' to execute in order."
 
-# ---- Orchestration ----
-all: network cluster taskdefs services autoscaling dataplane cloudfront
+all: 00-network 01-ecr 02-cluster 03-dataplane 04-taskdefs 05-services 06-autoscaling 07-cloudfront 08-db-init
 
-# ---- Steps ----
-network:
-	./infra/00_network_bootstrap.sh
+$(STAMPS):
+	mkdir -p $(STAMPS)
 
-cluster: _need_env
-	source $(ENV_FILE) && ./infra/02_cluster_and_roles.sh
+00-network: | $(STAMPS)
+	source $(ENV); bash infra/00_network_bootstrap.sh
+	touch $(STAMPS)/00-network.stamp
 
-taskdefs: _need_env
-	source $(ENV_FILE) && ./infra/02_task_defs.sh
+01-ecr: 00-network | $(STAMPS)
+	source $(ENV); bash infra/01_ecr_build_push.sh
+	touch $(STAMPS)/01-ecr.stamp
 
-alb: _need_env
-	source $(ENV_FILE) && ./infra/03_alb_services.sh
+02-cluster: 01-ecr | $(STAMPS)
+	source $(ENV); bash infra/02_cluster_and_roles.sh
+	touch $(STAMPS)/02-cluster.stamp
 
-# Ensure ALB exists before creating services
-services: alb
+03-dataplane: 02-cluster | $(STAMPS)
+	source $(ENV); bash infra/03_data_plane.sh
+	touch $(STAMPS)/03-dataplane.stamp
 
-autoscaling: _need_env
-	source $(ENV_FILE) && ./infra/04_autoscaling.sh
+04-taskdefs: 03-dataplane | $(STAMPS)
+	source $(ENV); bash infra/04_task_defs.sh
+	touch $(STAMPS)/04-taskdefs.stamp
 
-dataplane: _need_env
-	source $(ENV_FILE) && ./infra/05_data_plane.sh
+05-services: 04-taskdefs | $(STAMPS)
+	source $(ENV); bash infra/05_alb_services.sh
+	touch $(STAMPS)/05-services.stamp
 
-cloudfront: _need_env
-	source $(ENV_FILE) && ./infra/06_cloudfront.sh
+06-autoscaling: 05-services | $(STAMPS)
+	source $(ENV); bash infra/06_autoscaling.sh
+	touch $(STAMPS)/06-autoscaling.stamp
 
-# ---- Load test ----
-load-start:
-	./load/10_launch_workers.sh
+07-cloudfront: 06-autoscaling | $(STAMPS)
+	source $(ENV); bash infra/07_cloudfront.sh
+	touch $(STAMPS)/07-cloudfront.stamp
 
-load-report:
-	./load/20_collect_and_report.sh
+08-db-init: 03-dataplane | $(STAMPS)
+	# Aurora 준비가 끝난 뒤 실행. 재실행 안전.
+	source $(ENV); bash infra/08_db_init.sh
+	touch $(STAMPS)/08-db-init.stamp
 
-# 예: ECR 빌드/푸시 스텁 확장
-ecr:
-	./infra/01_ecr_build_push.sh  # 내부에서 confirm-worker까지 빌드/푸시하도록 확장
-
-
-# ---- Guards ----
-_need_env:
-	@test -f $(ENV_FILE) || (echo "❌ $(ENV_FILE) not found. Run 'make network' first to generate it." && exit 1)
+clean-stamps:
+	rm -rf $(STAMPS)

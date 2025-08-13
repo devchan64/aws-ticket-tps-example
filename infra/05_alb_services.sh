@@ -8,7 +8,7 @@ source "${ROOT}/infra/out/.env.generated"
 ACCOUNT_ID="${ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text --profile $AWS_PROFILE)}"
 APP_PORT="${APP_PORT:-3000}"
 
-# (선택) 리전별 ACM 인증서 ARN (없으면 443 리스너 생략)
+# (선택) 리전별 ACM 인증서 ARN (없으면 443 리스너 생략하고 80에서 직접 포워드)
 ACM_ARN_ap_northeast_1="${ACM_ARN_ap_northeast_1:-""}"
 ACM_ARN_ap_northeast_2="${ACM_ARN_ap_northeast_2:-""}"
 
@@ -16,7 +16,6 @@ for REGION in "${REGIONS[@]}"; do
   echo "=== [$REGION] ALB & ECS services ==="
   OUTDIR="${ROOT}/infra/out/${REGION}"; mkdir -p "$OUTDIR"
 
-  # pull env per region
   eval "PUB_SUBNETS=\$PUB_SUBNETS_${REGION//-/_}"
   eval "PRI_SUBNETS=\$PRI_SUBNETS_${REGION//-/_}"
   eval "ALB_SG=\$ALB_SG_${REGION//-/_}"
@@ -47,15 +46,20 @@ for REGION in "${REGIONS[@]}"; do
     --health-check-protocol HTTP --health-check-path /health \
     --query 'TargetGroups[0].TargetGroupArn' --output text)
 
-  # 3) Listeners (80 redirect → 443, 443 with rules)
-  L80_ARN=$(aws elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTP --port 80 \
-    --default-actions Type=redirect,RedirectConfig='{"Protocol":"HTTPS","Port":"443","StatusCode":"HTTP_301"}' \
-    --region "$REGION" --profile "$AWS_PROFILE" --query 'Listeners[0].ListenerArn' --output text)
-
-  L443_ARN=""
+  # 3) Listeners
   ACM_VAR="ACM_ARN_${REGION//-/_}"
-  ACM_ARN="${!ACM_VAR}"
+  ACM_ARN="${!ACM_VAR:-}"
+
+  L80_ARN=""
+  L443_ARN=""
+
   if [[ -n "$ACM_ARN" ]]; then
+    # 80은 443으로 리다이렉트
+    L80_ARN=$(aws elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTP --port 80 \
+      --default-actions Type=redirect,RedirectConfig='{"Protocol":"HTTPS","Port":"443","StatusCode":"HTTP_301"}' \
+      --region "$REGION" --profile "$AWS_PROFILE" --query 'Listeners[0].ListenerArn' --output text)
+
+    # 443 리스너 및 규칙
     L443_ARN=$(aws elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTPS --port 443 \
       --certificates CertificateArn="$ACM_ARN" \
       --default-actions Type=fixed-response,FixedResponseConfig='{"StatusCode":"404","ContentType":"text/plain","MessageBody":"notfound"}' \
@@ -71,10 +75,24 @@ for REGION in "${REGIONS[@]}"; do
       --actions Type=forward,TargetGroupArn="$TG_CONFIRM_ARN" \
       --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
   else
-    echo "⚠️  [$REGION] ACM ARN 미설정 → HTTPS 리스너 생략 (변수: $ACM_VAR)"
+    # HTTPS 없음: 80에서 직접 포워드
+    echo "⚠️  [$REGION] ACM ARN 미설정 → HTTPS 리스너 생략. HTTP(80)에서 포워드합니다."
+    L80_ARN=$(aws elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTP --port 80 \
+      --default-actions Type=fixed-response,FixedResponseConfig='{"StatusCode":"404","ContentType":"text/plain","MessageBody":"notfound"}' \
+      --region "$REGION" --profile "$AWS_PROFILE" --query 'Listeners[0].ListenerArn' --output text)
+
+    aws elbv2 create-rule --listener-arn "$L80_ARN" --priority 10 \
+      --conditions Field=path-pattern,Values='/public/*' \
+      --actions Type=forward,TargetGroupArn="$TG_PUBLIC_ARN" \
+      --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
+
+    aws elbv2 create-rule --listener-arn "$L80_ARN" --priority 20 \
+      --conditions Field=path-pattern,Values='/confirm' \
+      --actions Type=forward,TargetGroupArn="$TG_CONFIRM_ARN" \
+      --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
   fi
 
-  # 4) ECS Services (awsvpc, FARGATE)
+  # 4) ECS Services
   CLUSTER="ticket-${REGION}"
 
   aws ecs create-service \
@@ -97,7 +115,6 @@ for REGION in "${REGIONS[@]}"; do
     --load-balancers "targetGroupArn=${TG_CONFIRM_ARN},containerName=confirm,containerPort=${APP_PORT}" \
     --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
 
-  # --- worker service (no LB) ---
   aws ecs create-service \
     --cluster "$CLUSTER" \
     --service-name ticket-worker-svc \
@@ -115,5 +132,5 @@ for REGION in "${REGIONS[@]}"; do
  "Listener80":"${L80_ARN:-""}","Listener443":"${L443_ARN:-""}"}
 JSON
 
-  echo "✔ [$REGION] ALB ready: https://${DNS}"
+  echo "✔ [$REGION] ALB ready: http(s)://${DNS}"
 done

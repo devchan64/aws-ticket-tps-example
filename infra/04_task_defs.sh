@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
+#
+# infra/04_task_defs.sh
+#
 set -euo pipefail
 
-# ------------------------------------------------------------------------------
 # Register ECS Task Definitions (public-api, confirm-api, confirm-worker)
-# - Redis / RDS(Aurora) / SQS 값은 infra/out/<region>/dataplane.json 에서 주입
-# - 로그 그룹은 /ecs/ticket-<svc> 로 생성
-# - 이미지 태그는 :prod 사용 (ECR 푸시 파이프라인 참고)
-# ------------------------------------------------------------------------------
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/env.sh"
@@ -17,7 +15,6 @@ for REGION in "${REGIONS[@]}"; do
   echo "=== [$REGION] Register task definitions (public / confirm / worker) ==="
   OUTDIR="${ROOT}/infra/out/${REGION}"; mkdir -p "$OUTDIR"
 
-  # ---- cluster/roles info (must exist from 02_cluster_and_roles.sh) ----
   if [[ ! -f "${OUTDIR}/cluster.json" ]]; then
     echo "❌ ${OUTDIR}/cluster.json not found. Run infra/02_cluster_and_roles.sh first."
     exit 1
@@ -26,7 +23,6 @@ for REGION in "${REGIONS[@]}"; do
   PUB_ROLE="$(jq -r .PublicTaskRoleArn "${OUTDIR}/cluster.json")"
   CON_ROLE="$(jq -r .ConfirmTaskRoleArn "${OUTDIR}/cluster.json")"
 
-  # ---- dataplane info (optional but recommended; created by 05_data_plane.sh) ----
   if [[ -f "${OUTDIR}/dataplane.json" ]]; then
     SQS_URL="$(jq -r .QueueUrl "${OUTDIR}/dataplane.json")"
     REDIS_ENDPOINT="$(jq -r .RedisEndpoint "${OUTDIR}/dataplane.json")"
@@ -46,14 +42,10 @@ for REGION in "${REGIONS[@]}"; do
     AURORA_DB_NAME_OUT="${AURORA_DB_NAME:-ticketdb}"
   fi
 
-  # ---- Ensure log groups exist ------------------------------------------------
   aws logs create-log-group --log-group-name "/ecs/ticket-public"  --region "$REGION" --profile "$AWS_PROFILE" >/dev/null 2>&1 || true
   aws logs create-log-group --log-group-name "/ecs/ticket-confirm" --region "$REGION" --profile "$AWS_PROFILE" >/dev/null 2>&1 || true
   aws logs create-log-group --log-group-name "/ecs/ticket-worker"  --region "$REGION" --profile "$AWS_PROFILE" >/dev/null 2>&1 || true
 
-  # ---- public-api Task Definition --------------------------------------------
-  # - Exposes PORT 3000
-  # - Optionally injects REDIS_HOST
   cat > "${OUTDIR}/td-public.json" <<JSON
 {
   "family": "ticket-public",
@@ -89,9 +81,6 @@ JSON
     --cli-input-json file://"${OUTDIR}/td-public.json" \
     --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
 
-  # ---- confirm-api Task Definition -------------------------------------------
-  # - Exposes PORT 3000
-  # - Injects DB_HOST/DB_NAME (Aurora) and DB_SECRET_JSON (Secrets Manager)
   cat > "${OUTDIR}/td-confirm.json" <<JSON
 {
   "family": "ticket-confirm",
@@ -109,7 +98,9 @@ JSON
       { "name": "NODE_ENV", "value": "production" },
       { "name": "PORT", "value": "3000" },
       { "name": "DB_HOST", "value": "${AURORA_ENDPOINT}" },
-      { "name": "DB_NAME", "value": "${AURORA_DB_NAME_OUT}" }
+      { "name": "DB_NAME", "value": "${AURORA_DB_NAME_OUT}" },
+      { "name": "SQS_URL", "value": "${SQS_URL}" },
+      { "name": "SQS_GROUP_SHARDS", "value": "1024" }
     ],
     "secrets": [
       { "name": "DB_SECRET_JSON", "valueFrom": "${AURORA_SECRET_ARN}" }
@@ -131,9 +122,6 @@ JSON
     --cli-input-json file://"${OUTDIR}/td-confirm.json" \
     --region "$REGION" --profile "$AWS_PROFILE" >/dev/null
 
-  # ---- confirm-worker Task Definition ----------------------------------------
-  # - No LB; SQS consumer
-  # - Injects SQS_URL + Aurora connection info
   cat > "${OUTDIR}/td-worker.json" <<JSON
 {
   "family": "ticket-worker",
@@ -152,7 +140,11 @@ JSON
       { "name": "DB_HOST", "value": "${AURORA_ENDPOINT}" },
       { "name": "DB_NAME", "value": "${AURORA_DB_NAME_OUT}" },
       { "name": "BATCH", "value": "10" },
-      { "name": "WAIT", "value": "10" }
+      { "name": "WAIT", "value": "10" },
+      { "name": "SQS_GROUP_SHARDS", "value": "1024" },
+      { "name": "SQS_LONG_POLL", "value": "20" },
+      { "name": "SQS_VISIBILITY", "value": "120" },
+      { "name": "CONCURRENCY", "value": "32" }
     ],
     "secrets": [
       { "name": "DB_SECRET_JSON", "valueFrom": "${AURORA_SECRET_ARN}" }
