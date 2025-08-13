@@ -1,0 +1,9 @@
+{
+  "name": "confirm-worker",
+  "type": "module",
+  "dependencies": {
+    "aws-sdk": "^2.1674.0",
+    "pg": "^8.11.5",
+    "uuid": "^10.0.0"
+  }
+}

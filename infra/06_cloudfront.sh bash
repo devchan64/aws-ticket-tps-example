@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/env.sh"
+
+PRIMARY_REGION="${REGIONS[0]}"
+OUTDIR="${ROOT}/infra/out/${PRIMARY_REGION}"
+ALB_DNS=$(jq -r .DNSName "${OUTDIR}/alb.json")
+
+if [[ -z "$ALB_DNS" || "$ALB_DNS" == "null" ]]; then
+  echo "ALB DNS not found. Run 03_alb_services.sh first."; exit 1
+fi
+
+# 최소 캐시 정책 (기본 동작)
+cat > "${ROOT}/infra/out/cf-cache-minimal.json" <<JSON
+{
+  "Name": "ticket-cache-minimal",
+  "DefaultTTL": 5, "MinTTL": 0, "MaxTTL": 60,
+  "ParametersInCacheKeyAndForwardedToOrigin": {
+    "EnableAcceptEncodingBrotli": true, "EnableAcceptEncodingGzip": true,
+    "HeadersConfig": { "HeaderBehavior": "none" },
+    "CookiesConfig": { "CookieBehavior": "none" },
+    "QueryStringsConfig": { "QueryStringBehavior": "none" }
+  }
+}
+JSON
+
+POLICY_ID=$(aws cloudfront list-cache-policies --type custom --query 'CachePolicyList.Items[?CachePolicy.CachePolicyConfig.Name==`ticket-cache-minimal`].CachePolicy.Id' --output text 2>/dev/null || true)
+if [[ -z "$POLICY_ID" ]]; then
+  POLICY_ID=$(aws cloudfront create-cache-policy --cache-policy-config file://"${ROOT}/infra/out/cf-cache-minimal.json" \
+    --query 'CachePolicy.Id' --output text)
+fi
+
+# /public 전용 캐시 정책
+cat > "${ROOT}/infra/out/cf-cache-public.json" <<JSON
+{
+  "Name": "ticket-cache-public",
+  "DefaultTTL": 10, "MinTTL": 0, "MaxTTL": 120,
+  "ParametersInCacheKeyAndForwardedToOrigin": {
+    "EnableAcceptEncodingBrotli": true, "EnableAcceptEncodingGzip": true,
+    "HeadersConfig": { "HeaderBehavior": "none" },
+    "CookiesConfig": { "CookieBehavior": "none" },
+    "QueryStringsConfig": { "QueryStringBehavior": "whitelist", "QueryStrings": { "Quantity": 0, "Items": [] } }
+  }
+}
+JSON
+
+PUB_POLICY_ID=$(aws cloudfront list-cache-policies --type custom --query 'CachePolicyList.Items[?CachePolicy.CachePolicyConfig.Name==`ticket-cache-public`].CachePolicy.Id' --output text 2>/dev/null || true)
+if [[ -z "$PUB_POLICY_ID" ]]; then
+  PUB_POLICY_ID=$(aws cloudfront create-cache-policy --cache-policy-config file://"${ROOT}/infra/out/cf-cache-public.json" \
+    --query 'CachePolicy.Id' --output text)
+fi
+
+# 응답 헤더 정책 (보안 헤더 + Server-Timing)
+HDR_POLICY_ID=$(aws cloudfront list-response-headers-policies --type custom --query 'ResponseHeadersPolicyList.Items[?ResponseHeadersPolicy.ResponseHeadersPolicyConfig.Name==`ticket-hdr`].ResponseHeadersPolicy.Id' --output text 2>/dev/null || true)
+if [[ -z "$HDR_POLICY_ID" ]]; then
+  HDR_POLICY_ID=$(aws cloudfront create-response-headers-policy --response-headers-policy-config '{
+    "Name":"ticket-hdr",
+    "SecurityHeadersConfig":{
+      "ContentTypeOptions":{"Override":true},
+      "FrameOptions":{"Override":true,"FrameOption":"DENY"},
+      "ReferrerPolicy":{"Override":true,"ReferrerPolicy":"same-origin"},
+      "StrictTransportSecurity":{"Override":true,"AccessControlMaxAgeSec":31536000,"IncludeSubdomains":true,"Preload":true}
+    },
+    "ServerTimingHeadersConfig":{"Enabled":true,"SamplingRate":1.0}
+  }' --query 'ResponseHeadersPolicy.Id' --output text)
+fi
+
+# 배포 생성 (기본 + /public/* behavior)
+aws cloudfront create-distribution --distribution-config "{
+  \"CallerReference\": \"ticket-$(date +%s)\",
+  \"Enabled\": true,
+  \"Comment\": \"ticket max tps\",
+  \"Origins\": {
+    \"Items\": [{
+      \"Id\": \"ticket-alb\",
+      \"DomainName\": \"${ALB_DNS}\",
+      \"CustomOriginConfig\": {\"HTTPPort\":80,\"HTTPSPort\":443,\"OriginProtocolPolicy\":\"https-only\"}
+    }],
+    \"Quantity\": 1
+  },
+  \"DefaultCacheBehavior\": {
+    \"TargetOriginId\": \"ticket-alb\",
+    \"ViewerProtocolPolicy\": \"redirect-to-https\",
+    \"AllowedMethods\": {\"Quantity\":7,\"Items\":[\"GET\",\"HEAD\",\"OPTIONS\",\"PUT\",\"PATCH\",\"POST\",\"DELETE\"],\"CachedMethods\":{\"Quantity\":2,\"Items\":[\"GET\",\"HEAD\"]}},
+    \"CachePolicyId\": \"${POLICY_ID}\",
+    \"ResponseHeadersPolicyId\": \"${HDR_POLICY_ID}\"
+  },
+  \"CacheBehaviors\": {
+    \"Quantity\": 1,
+    \"Items\": [{
+      \"PathPattern\": \"/public/*\",
+      \"TargetOriginId\": \"ticket-alb\",
+      \"ViewerProtocolPolicy\": \"redirect-to-https\",
+      \"AllowedMethods\": {\"Quantity\":2,\"Items\":[\"GET\",\"HEAD\"],\"CachedMethods\":{\"Quantity\":2,\"Items\":[\"GET\",\"HEAD\"]}},
+      \"CachePolicyId\": \"${PUB_POLICY_ID}\",
+      \"ResponseHeadersPolicyId\": \"${HDR_POLICY_ID}\"
+    }]
+  }
+}" >/dev/null
+
+echo "✔ CloudFront distribution creation requested."

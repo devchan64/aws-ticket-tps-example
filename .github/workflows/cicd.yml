@@ -1,0 +1,67 @@
+name: ticket-ecs-cicd
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ECR_PUBLIC_REPO: public-api
+  ECR_CONFIRM_REPO: confirm-api
+  ECR_WORKER_REPO: confirm-worker
+  REGIONS: '["ap-northeast-1","ap-northeast-2"]'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        region: ["ap-northeast-1","ap-northeast-2"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ matrix.region }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build images
+        run: |
+          docker build -t ${ECR_PUBLIC_REPO}:prod ./apps/public-api
+          docker build -t ${ECR_CONFIRM_REPO}:prod ./apps/confirm-api
+          docker build -t ${ECR_WORKER_REPO}:prod ./apps/confirm-worker
+
+      - name: Push images (to both regions)
+        run: |
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          for R in ${REGIONS//[\[\]\"]/}; do
+            if [ -z "$R" ] || [ "$R" = "," ]; then continue; fi
+            aws ecr describe-repositories --repository-names ${ECR_PUBLIC_REPO} --region $R >/dev/null 2>&1 || \
+              aws ecr create-repository --repository-name ${ECR_PUBLIC_REPO} --image-tag-mutability IMMUTABLE --region $R
+            aws ecr describe-repositories --repository-names ${ECR_CONFIRM_REPO} --region $R >/dev/null 2>&1 || \
+              aws ecr create-repository --repository-name ${ECR_CONFIRM_REPO} --image-tag-mutability IMMUTABLE --region $R
+            aws ecr describe-repositories --repository-names ${ECR_WORKER_REPO} --region $R >/dev/null 2>&1 || \
+              aws ecr create-repository --repository-name ${ECR_WORKER_REPO} --image-tag-mutability IMMUTABLE --region $R
+
+            docker tag ${ECR_PUBLIC_REPO}:prod  ${ACC}.dkr.ecr.${R}.amazonaws.com/${ECR_PUBLIC_REPO}:prod
+            docker tag ${ECR_CONFIRM_REPO}:prod ${ACC}.dkr.ecr.${R}.amazonaws.com/${ECR_CONFIRM_REPO}:prod
+            docker tag ${ECR_WORKER_REPO}:prod ${ACC}.dkr.ecr.${R}.amazonaws.com/${ECR_WORKER_REPO}:prod
+
+            docker push ${ACC}.dkr.ecr.${R}.amazonaws.com/${ECR_PUBLIC_REPO}:prod
+            docker push ${ACC}.dkr.ecr.${R}.amazonaws.com/${ECR_CONFIRM_REPO}:prod
+            docker push ${ACC}.dkr.ecr.${R}.amazonaws.com/${ECR_WORKER_REPO}:prod
+          done
+
+      - name: Force new deployment (ECS services)
+        run: |
+          for R in ${REGIONS//[\[\]\"]/}; do
+            if [ -z "$R" ] || [ "$R" = "," ]; then continue; fi
+            aws ecs update-service --cluster ticket-${R} --service ticket-public-svc  --force-new-deployment --region $R
+            aws ecs u

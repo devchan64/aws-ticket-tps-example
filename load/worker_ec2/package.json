@@ -1,0 +1,9 @@
+{
+  "name": "ticket-load-worker",
+  "type": "module",
+  "dependencies": {
+    "undici": "^6.19.8",
+    "uuid": "^10.0.0",
+    "yaml": "^2.5.0"
+  }
+}

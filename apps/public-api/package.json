@@ -1,0 +1,9 @@
+{
+  "name": "public-api",
+  "type": "module",
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "fastify-helmet": "^12.5.1",
+    "ioredis": "^5.4.1"
+  }
+}
