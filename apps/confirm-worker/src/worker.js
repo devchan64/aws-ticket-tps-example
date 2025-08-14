@@ -9,8 +9,11 @@ import path from "node:path";
 
 const AWS_REGION = process.env.AWS_REGION || "ap-northeast-1";
 AWS.config.update({ region: AWS_REGION });
-const QURL = process.env.QURL || "";
-if (!QURL) { console.error("[worker] QURL is required"); process.exit(1); }
+const QURL = process.env.SQS_URL || "";
+if (!QURL) {
+  console.error("[worker] QURL is required");
+  process.exit(1);
+}
 const sqs = new AWS.SQS({ apiVersion: "2012-11-05" });
 
 // --- 스펙 로딩 & $ref 해제 ---
@@ -29,7 +32,11 @@ const validateMsg = ajv.compile(deref.components.schemas.CommitSqsMessage);
 // --- 메시지 처리 ---
 async function handle(m) {
   let body;
-  try { body = JSON.parse(m.Body); } catch { throw new Error("invalid_json"); }
+  try {
+    body = JSON.parse(m.Body);
+  } catch {
+    throw new Error("invalid_json");
+  }
   if (!validateMsg(body)) {
     const detail = ajv.errorsText(validateMsg.errors);
     throw new Error("schema_validation_failed: " + detail);
@@ -45,23 +52,39 @@ const WAIT = parseInt(process.env.WAIT_TIME || "20", 10);
 const VIS = parseInt(process.env.VISIBILITY_TIMEOUT || "60", 10);
 
 async function pollOnce() {
-  const { Messages } = await sqs.receiveMessage({
-    QueueUrl: QURL, MaxNumberOfMessages: BATCH, WaitTimeSeconds: WAIT, VisibilityTimeout: VIS,
-  }).promise();
+  const { Messages } = await sqs
+    .receiveMessage({
+      QueueUrl: QURL,
+      MaxNumberOfMessages: BATCH,
+      WaitTimeSeconds: WAIT,
+      VisibilityTimeout: VIS,
+    })
+    .promise();
   if (!Messages || !Messages.length) return;
 
   const dels = [];
   for (const m of Messages) {
-    try { await handle(m); dels.push({ Id: m.MessageId, ReceiptHandle: m.ReceiptHandle }); }
-    catch (e) { console.error("[worker] err", e?.message || e); dels.push({ Id: m.MessageId, ReceiptHandle: m.ReceiptHandle }); }
+    try {
+      await handle(m);
+      dels.push({ Id: m.MessageId, ReceiptHandle: m.ReceiptHandle });
+    } catch (e) {
+      console.error("[worker] err", e?.message || e);
+      dels.push({ Id: m.MessageId, ReceiptHandle: m.ReceiptHandle });
+    }
   }
-  if (dels.length) await sqs.deleteMessageBatch({ QueueUrl: QURL, Entries: dels }).promise();
+  if (dels.length)
+    await sqs.deleteMessageBatch({ QueueUrl: QURL, Entries: dels }).promise();
 }
 
 (async function main() {
   console.log("[worker] start", { region: AWS_REGION, queue: QURL });
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    try { await pollOnce(); } catch (e) { console.error("[worker] fatal", e); await new Promise(r => setTimeout(r, 1000)); }
+    try {
+      await pollOnce();
+    } catch (e) {
+      console.error("[worker] fatal", e);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
   }
 })();

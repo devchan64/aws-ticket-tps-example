@@ -1,20 +1,11 @@
 #!/usr/bin/env bash
-# tools/sync-dotenv.sh
+# tools/gen-loadtestbot-env.sh
 set -euo pipefail
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "${ROOT}/env.sh"
 
-# e2e .env
-cat > "${ROOT}/test/e2e/.env" <<EOF
-REGION=${REGIONS[0]}
-INFRA_OUT=../../infra/out
-# BASE_URL=              # 비워두면 resolve-alb-dns.js가 자동 주입
-USER_ID=user-0001
-EVENT_ID=event-0001
-SEAT_IDS=R1C1,R1C2
-EOF
-
-# loadtestbot .env
+# loadtestbot .env 생성
 _regions_csv="$(IFS=,; echo "${REGIONS[*]}")"
 cat > "${ROOT}/test/loadtestbot/.env" <<EOF
 REGIONS=${_regions_csv}
@@ -37,4 +28,4 @@ K6_LOG_GROUP=/ecs/loadtestbot
 K6_LOG_PREFIX=load-k6
 EOF
 
-echo "[sync] wrote test/e2e/.env and test/loadtestbot/.env"
+echo "[gen-loadtestbot-env] wrote test/loadtestbot/.env"

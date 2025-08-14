@@ -207,7 +207,7 @@ tools/sync-dotenv.sh
 
 ```bash
 # 1) env.sh 로드 및 .env 동기화
-bash tools/sync-dotenv.sh
+tools/sync-dotenv.sh
 
 # 2) e2e
 cd test/e2e
