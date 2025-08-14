@@ -10,19 +10,57 @@ ECS Fargate + ALB + CloudFront + Redis + SQS + DynamoDB + Aurora PostgreSQL Serv
 ## 레포 구조
 
 ```
-repo/
-├─ apps/
-│  ├─ public-api/        # /public/*  (Fastify + OpenAPI Glue)
-│  ├─ confirm-api/       # /confirm/* (Fastify + OpenAPI Glue)
-│  └─ confirm-worker/    # SQS FIFO consumer (Ajv validation)
-├─ packages/
-│  └─ spec-utils/        # ticketing.yaml 슬라이서(loadAndSliceSpec)
-├─ openapi/
-│  └─ ticketing.yaml     # 단일 스펙(공통) — /public/*, /confirm/* 모두 포함
-├─ infra/                # 셸 스크립트 (VPC, ECS, ALB, SQS, DDB, Redis, Aurora, CloudFront)
-├─ Makefile              # 배포/운영 순서 자동화
-├─ turbo.json            # Turborepo 파이프라인
-└─ pnpm-workspace.yaml   # 워크스페이스
+aws-ticket-tps-example/
+├── .github/workflows/ # GitHub Actions CI/CD 워크플로우
+│ └── cicd.yml
+│
+├── apps/ # 서비스 애플리케이션
+│ ├── confirm-api/ # 결제 확인 API
+│ │ ├── Dockerfile
+│ │ ├── package.json
+│ │ └── src/ # API 라우트 및 SQS 연동
+│ ├── confirm-worker/ # 결제 처리 워커
+│ │ ├── Dockerfile
+│ │ ├── package.json
+│ │ └── src/ # DB 연동 및 워커 로직
+│ └── public-api/ # 공개 API 서비스
+│   ├── Dockerfile
+│   ├── package.json
+│   └── src/ # API 라우트 및 Redis 캐시
+│
+├── infra/ # AWS 인프라 배포 스크립트
+│ ├── 00_network_bootstrap.sh # 네트워크(VPC, 서브넷 등)
+│ ├── 01_ecr_build_push.sh # ECR 빌드 및 푸시
+│ ├── 02_cluster_and_roles.sh # ECS 클러스터/IAM 역할
+│ ├── 03_data_plane.sh # SQS, DynamoDB, Redis, Aurora
+│ ├── 04_task_defs.sh # ECS 태스크 정의
+│ ├── 05_alb_services.sh # ALB 및 서비스 생성
+│ ├── 06_autoscaling.sh # 오토스케일링 정책
+│ ├── 07_cloudfront.sh # CloudFront 배포
+│ └── 08_db_init.sh # DB 스키마 초기화
+│
+├── load/ # 로드 테스트 및 시나리오
+│ ├── e2e/ # E2E 시나리오 러너
+│ ├── scenarios/ # 부하 시나리오 YAML
+│ ├── worker_ec2/ # EC2 기반 로드봇 워커
+│ ├── 10_launch_workers.sh
+│ └── 20_collect_and_report.sh
+│
+├── openapi/ # API 계약 문서
+│ └── ticketing.yaml
+│
+├── packages/ # 공유 패키지
+│ ├── contracts/ # 서비스 간 계약 코드
+│ └── spec-utils/ # 사양 유틸리티
+│
+├── tools/ # 개발/운영 도구
+│ └── db/ # DB 초기화 스크립트
+│
+├── requirement.md # 프로젝트 요구사항
+├── turbo.json # Turborepo 설정
+├── pnpm-workspace.yaml # pnpm 모노레포 설정
+├── package.json # 루트 패키지 설정
+└── LICENSE # 라이선스
 ```
 
 ## Quick Start
@@ -64,23 +102,88 @@ make all
 
 ## 주요 서비스
 
-- **public-api**: 웨이팅룸, 좌석 조회/홀드(캐시/TTL), `/public/*` 엔드포인트
-- **confirm-api**: 결제 intent/승인 콜백/커밋 요청 → SQS enqueue
-- **confirm-worker**: SQS consumer → Aurora 트랜잭션(아이템포턴시)
+- **public-api**
 
-## 엔드포인트 개요
+  - `/public/*` 엔드포인트 제공
+  - 웨이팅룸 입장(`enter`), 상태 조회(`room-status`)
+  - 좌석 요약 조회(`summary/{event}/{section}`), 이벤트별 좌석 상태 조회(`seats/{eventId}`)
+  - 좌석 홀드(`hold`) 및 해제(`release`) — 캐시/TTL 기반
+  - 서비스 헬스체크(`/public/health`, `/public/ping`)
 
-- `POST /public/enter` → `{ roomToken }`
-- `GET  /public/room-status?token=...` → `{ ready, leftSec }`
-- `POST /public/hold` (X-Room-Token 헤더) → `{ holdId, expiresAt }`
-- `POST /public/release`
-- `GET  /public/summary/:event/:section` (짧은 TTL 캐시)
+- **confirm-api**
 
-- `POST /confirm/payment-intent` (Idempotency-Key)
-- `POST /confirm/payment-callback` (PG 웹훅 시뮬레이터)
-- `POST /confirm/commit` (Idempotency-Key)
+  - `/confirm/*` 엔드포인트 제공
+  - 결제 Intent 생성(`/payment-intent`), 승인 콜백, 커밋 요청(`/commit`)
+  - 주문/결제 상태 조회(`/status`)
+  - 모든 커밋 요청은 FIFO SQS로 비동기 처리
+  - Idempotency-Key 기반 중복 방지 및 재실행 안전성 보장
+
+- **confirm-worker**
+
+  - SQS Consumer
+  - 메시지 계약(`CommitSqsMessage`) 기반으로 Aurora DB 트랜잭션 수행
+  - Commit 처리 시 아이템포턴시 보장
+
+## 서비스 간 요청 흐름
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User(Client)
+    participant P as public-api
+    participant C as confirm-api
+    participant Q as SQS (FIFO)
+    participant W as confirm-worker
+    participant A as Aurora (DB)
+    participant R as Redis/Cache
+
+    Note over U,P: 1) 대기실 진입 및 좌석 조회
+    U->>P: POST /public/enter {userId,eventId}
+    P-->>U: {roomToken, position, etaSec}
+
+    U->>P: GET /public/room-status?token=roomToken
+    P-->>U: {ready,leftSec}
+
+    U->>P: GET /public/summary/{event}/{section}
+    P->>R: cache lookup
+    alt cache hit
+      R-->>P: summary
+    else cache miss
+      P-->>U: summary (and set TTL in Redis)
+    end
+
+    Note over U,P,C,Q,W,A: 2) 좌석 홀드 → Intent → 커밋(비동기)
+    U->>P: POST /public/hold (x-room-token, {eventId,seatId})
+    P->>R: hold with TTL
+    R-->>P: {holdId,expiresAt}
+    P-->>U: {holdId,expiresAt}
+
+    U->>C: POST /confirm/payment-intent\n(Idempotency-Key, {userId,eventId,seatIds})
+    C-->>U: 201 {intentId,amount}\n(or 200 X-Idempotent-Replay)
+
+    U->>C: POST /confirm/commit\n(Idempotency-Key, {intentId,eventId,seatIds,userId})
+    C->>Q: enqueue CommitSqsMessage(idem,payload)
+    C-->>U: 202 Accepted + Location:/confirm/status?idem=...
+
+    Note over Q,W,A: FIFO로 순서보장 처리, 아이템포턴시 보장
+    Q-->>W: CommitSqsMessage
+    W->>A: BEGIN; validate & write order/payment; COMMIT
+    W-->>Q: delete message on success
+
+    Note over U,C,A: 3) 상태 폴링
+    U->>C: GET /confirm/status?idem=...
+    C->>A: query by idem
+    A-->>C: {order,payment}
+    C-->>U: {order,payment}
+
+    Note over P,R: 만료/해제
+    U->>P: POST /public/release {eventId,seatId}
+    P->>R: release hold
+    R-->>P: {released:true}
+```
 
 ## 환경 변수(서비스별)
+
 - `env.sh`파일 참조
 
 ## 테스트/E2E

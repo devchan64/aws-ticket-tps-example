@@ -1,5 +1,0 @@
-mode: ramp
-stages:
-  - { durationSec: 20, rpsFactor: 0.1 }
-  - { durationSec: 20, rpsFactor: 0.3 }
-  - { durationSec: 20, rpsFactor: 1.0 }

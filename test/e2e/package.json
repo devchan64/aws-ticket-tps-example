@@ -1,0 +1,20 @@
+{
+  "name": "aws-ticket-tps-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "node scripts/resolve-alb-dns.js && node scripts/wait-services.js",
+    "test": "playwright test",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:full": "playwright test --grep-invert @skip",
+    "test:report": "playwright show-report",
+    "wait": "node scripts/wait-services.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.46.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "dotenv": "^16.4.5",
+    "yaml": "^2.5.1"
+  }
+}
