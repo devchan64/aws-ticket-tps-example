@@ -1,0 +1,16 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "lint": { "cache": true, "dependsOn": ["^lint"] },
+    "test": { "cache": true, "dependsOn": ["^test"] },
+    "build": {
+      "cache": true,
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "openapi/**"]
+    },
+    "openapi": { "cache": false, "dependsOn": ["build"] },
+    "docker:build": { "cache": false, "dependsOn": ["build"] },
+    "docker:push": { "cache": false, "dependsOn": ["docker:build"] },
+    "dev": { "cache": false, "persistent": true }
+  }
+}

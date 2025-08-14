@@ -1,3 +1,6 @@
+/**
+ * apps/public-api/src/cache/redis.js
+ */
 import Redis from "ioredis";
 
 const host = process.env.REDIS_HOST;

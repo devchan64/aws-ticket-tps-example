@@ -1,0 +1,13 @@
+{
+  "name": "@ticketing/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/confirm.js",
+  "exports": {
+    ".": "./src/confirm.js"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.32.35"
+  }
+}

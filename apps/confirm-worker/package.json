@@ -1,9 +1,18 @@
 {
   "name": "confirm-worker",
+  "private": true,
   "type": "module",
+  "scripts": {
+    "dev": "node src/worker.js",
+    "start": "NODE_ENV=production node src/worker.js",
+    "build": "echo \"no build step\""
+  },
   "dependencies": {
-    "aws-sdk": "^2.1674.0",
-    "pg": "^8.11.5",
-    "uuid": "^10.0.0"
+    "@sinclair/typebox": "^0.32.35",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "aws-sdk": "^2.1600.0",
+    "pg": "^8.12.0",
+    "@ticketing/contracts": "workspace:*"
   }
 }

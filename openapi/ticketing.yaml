@@ -1,0 +1,410 @@
+openapi: 3.1.0
+info:
+  title: Ticketing API
+  version: 1.0.0
+  description: >
+    단일 스펙 파일(공통). /public/* 과 /confirm/* 를 서비스별로 슬라이스해 로딩합니다.
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: health
+  - name: public
+  - name: confirm
+
+paths:
+  # ---------------------------
+  # Public API
+  # ---------------------------
+  /public/health:
+    get:
+      operationId: publicHealth
+      tags: [health, public]
+      summary: Public service health
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  ts: { type: integer, format: int64 }
+
+  /public/ping:
+    get:
+      operationId: pingPublic
+      tags: [public]
+      summary: Public API ping
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service: { type: string }
+                  ts: { type: integer, format: int64 }
+
+  /public/summary/{event}/{section}:
+    get:
+      operationId: getSeatSummary
+      tags: [public]
+      summary: Seat summary (cached)
+      parameters:
+        - in: path
+          name: event
+          required: true
+          schema: { type: string }
+        - in: path
+          name: section
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event: { type: string }
+                  section: { type: string }
+                  seatsAvailable: { type: integer }
+                  updatedAt: { type: string, format: date-time }
+
+  /public/enter:
+    post:
+      operationId: enterWaitingRoom
+      tags: [public]
+      summary: Enter waiting room
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, eventId]
+              properties:
+                userId: { type: string }
+                eventId: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roomToken: { type: string }
+                  position: { type: integer }
+                  etaSec: { type: integer }
+        "400":
+          description: bad_request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /public/room-status:
+    get:
+      operationId: getWaitingRoomStatus
+      tags: [public]
+      summary: Waiting room status
+      parameters:
+        - in: query
+          name: token
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready: { type: boolean }
+                  leftSec: { type: integer }
+
+  /public/hold:
+    post:
+      operationId: holdSeat
+      tags: [public]
+      summary: Hold a seat
+      parameters:
+        - in: header
+          name: x-room-token
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, seatId]
+              properties:
+                eventId: { type: string }
+                seatId: { type: string }
+      responses:
+        "200":
+          description: Held
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  holdId: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "400":
+          description: bad_request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: room_expired
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: seat_already_held_or_sold
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /public/release:
+    post:
+      operationId: releaseSeat
+      tags: [public]
+      summary: Release a held seat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, seatId]
+              properties:
+                eventId: { type: string }
+                seatId: { type: string }
+      responses:
+        "200":
+          description: Released
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  released: { type: boolean }
+
+  /public/seats/{eventId}:
+    get:
+      operationId: getEventSeats
+      tags: [public]
+      summary: Event seat status (demo)
+      parameters:
+        - in: path
+          name: eventId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  eventId: { type: string }
+                  note: { type: string }
+        "500":
+          description: seats_fetch_failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  # ---------------------------
+  # Confirm API
+  # ---------------------------
+  /confirm/health:
+    get:
+      operationId: confirmHealth
+      tags: [health, confirm]
+      summary: Confirm service health
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  ts: { type: integer, format: int64 }
+
+  /confirm/payment-intent:
+    post:
+      operationId: createPaymentIntent
+      tags: [confirm]
+      summary: Create payment intent
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PaymentIntentBody" }
+      responses:
+        "201":
+          description: Created
+          headers:
+            Location:
+              schema: { type: string }
+              description: URL to query intent or order status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntentResponse" }
+        "200":
+          description: Idempotent replay (existing)
+          headers:
+            X-Idempotent-Replay:
+              schema: { type: boolean }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntentResponse" }
+        "400":
+          description: bad_request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: throttled
+
+  /confirm/commit:
+    post:
+      operationId: commitOrder
+      tags: [confirm]
+      summary: Commit order (async via FIFO SQS)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommitBody" }
+      responses:
+        "202":
+          description: Accepted
+          headers:
+            Location:
+              schema: { type: string }
+              description: URL to poll order/payment status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommitAcceptedResponse" }
+        "400":
+          description: bad_request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: throttled
+        "503":
+          description: temporarily unavailable
+
+  /confirm/status:
+    get:
+      operationId: getStatus
+      tags: [confirm]
+      summary: Query order/payment status by idempotency key
+      parameters:
+        - in: query
+          name: idem
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "400":
+          description: bad_request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: db_error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+components:
+  parameters:
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8 }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+      additionalProperties: false
+
+    PaymentIntentBody:
+      type: object
+      required: [userId, eventId, seatIds]
+      properties:
+        userId: { type: string }
+        eventId: { type: string }
+        seatIds:
+          type: array
+          minItems: 1
+          items: { type: string }
+
+    PaymentIntentResponse:
+      type: object
+      properties:
+        intentId: { type: string }
+        amount: { type: integer }
+
+    CommitBody:
+      type: object
+      required: [intentId, eventId, seatIds, userId]
+      properties:
+        intentId: { type: string }
+        eventId: { type: string }
+        seatIds:
+          type: array
+          minItems: 1
+          items: { type: string }
+        userId: { type: string }
+
+    CommitAcceptedResponse:
+      type: object
+      properties:
+        accepted: { type: boolean }
+        status: { type: string, enum: [PROCESSING] }
+        idem: { type: string }
+
+    StatusResponse:
+      type: object
+      properties:
+        order: { type: ["null", "object"] }
+        payment: { type: ["null", "object"] }
+
+    # 워커(SQS)와 공유하는 메시지 계약
+    CommitSqsMessage:
+      type: object
+      properties:
+        type: { const: COMMIT_ORDER }
+        payload: { $ref: "#/components/schemas/CommitBody" }
+        idem: { type: string }
+      required: [type, payload, idem]
+      additionalProperties: false

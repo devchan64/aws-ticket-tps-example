@@ -1,11 +1,20 @@
 {
   "name": "confirm-api",
+  "private": true,
   "type": "module",
+  "scripts": {
+    "dev": "node src/app.js",
+    "start": "NODE_ENV=production node src/app.js",
+    "build": "echo \"no build step\""
+  },
   "dependencies": {
+    "@fastify/helmet": "^13.0.1",
+    "@fastify/swagger": "^9.4.0",
+    "@fastify/swagger-ui": "^5.0.1",
+    "@sinclair/typebox": "^0.32.35",
+    "aws-sdk": "^2.1600.0",
     "fastify": "^4.28.1",
-    "fastify-helmet": "^12.5.1",
-    "aws-sdk": "^2.1674.0",
-    "uuid": "^10.0.0",
-    "pg": "^8.11.5"
+    "pg": "^8.12.0",
+    "@ticketing/contracts": "workspace:*"
   }
 }
