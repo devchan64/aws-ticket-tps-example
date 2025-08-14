@@ -3,7 +3,6 @@ import Fastify from "fastify";
 import helmet from "@fastify/helmet";
 import swaggerUI from "@fastify/swagger-ui";
 import openapiGlue from "@platformatic/fastify-openapi-glue";
-import path from "node:path";
 import AWS from "aws-sdk";
 import crypto from "node:crypto";
 
@@ -33,9 +32,22 @@ await app.register(swaggerUI, {
 
 // 스펙의 operationId와 1:1 매핑되는 핸들러
 class Service {
+  // Redis 가용성 체크: 없으면 503
+  ensureCacheOr503(reply) {
+    if (!redis) {
+      reply.code(503).send({
+        error: "cache_unavailable",
+        message: "Redis is not configured or unavailable",
+      });
+      return false;
+    }
+    return true;
+  }
+
   async publicHealth() {
     return { ok: true, ts: Date.now() };
   }
+
   async pingPublic() {
     return { service: "public-api", ts: Date.now() };
   }
@@ -54,7 +66,9 @@ class Service {
   async enterWaitingRoom(req, reply) {
     const { userId, eventId } = req.body || {};
     if (!userId || !eventId)
-      return reply.code(400).send({ error: "bad_request" });
+      return reply.code(400).send({ error: "bad_request", message: "userId and eventId are required" });
+    if (!this.ensureCacheOr503(reply)) return;
+
     const roomToken = crypto.randomBytes(16).toString("hex");
     await redis.setEx(
       `room:${roomToken}`,
@@ -64,7 +78,8 @@ class Service {
     return { roomToken, position: 0, etaSec: 0 };
   }
 
-  async getWaitingRoomStatus(req) {
+  async getWaitingRoomStatus(req, reply) {
+    if (!this.ensureCacheOr503(reply)) return;
     const { token } = req.query;
     const ttl = await redis.ttl(`room:${token}`);
     const exists = ttl !== -2;
@@ -73,18 +88,21 @@ class Service {
   }
 
   async holdSeat(req, reply) {
+    if (!this.ensureCacheOr503(reply)) return;
+
     const token = req.headers["x-room-token"];
-    if (!token) return reply.code(400).send({ error: "bad_request" });
+    if (!token) return reply.code(400).send({ error: "bad_request", message: "x-room-token header is required" });
     const alive = await redis.exists(`room:${token}`);
-    if (!alive) return reply.code(401).send({ error: "room_expired" });
+    if (!alive) return reply.code(401).send({ error: "room_expired", message: "waiting room expired" });
 
     const { eventId, seatId } = req.body || {};
     if (!eventId || !seatId)
-      return reply.code(400).send({ error: "bad_request" });
+      return reply.code(400).send({ error: "bad_request", message: "eventId and seatId are required" });
 
-    const pk = `event#${eventId}`,
-      sk = `seat#${seatId}`;
+    const pk = `event#${eventId}`;
+    const sk = `seat#${seatId}`;
     const ttl = Math.floor(Date.now() / 1000) + HOLD_TTL;
+
     try {
       await ddb
         .put({
@@ -94,23 +112,30 @@ class Service {
             "attribute_not_exists(pk) AND attribute_not_exists(sk)",
         })
         .promise();
+
       return {
         holdId: `${eventId}:${seatId}`,
         expiresAt: new Date(ttl * 1000).toISOString(),
       };
     } catch (e) {
       if (e?.code === "ConditionalCheckFailedException") {
-        return reply.code(409).send({ error: "seat_already_held_or_sold" });
+        return reply.code(409).send({ error: "seat_already_held_or_sold", message: "seat is already held or sold" });
       }
       req.log.error(e);
-      return reply.code(500).send({ error: "ddb_error" });
+      return reply.code(500).send({
+        error: "ddb_error",
+        message: "Failed to persist hold in DynamoDB",
+      });
     }
   }
 
-  async releaseSeat(req) {
+  async releaseSeat(req, reply) {
+    if (!this.ensureCacheOr503(reply)) return;
+
     const { eventId, seatId } = req.body || {};
-    const pk = `event#${eventId}`,
-      sk = `seat#${seatId}`;
+    const pk = `event#${eventId}`;
+    const sk = `seat#${seatId}`;
+
     try {
       await ddb
         .delete({
@@ -120,7 +145,8 @@ class Service {
         })
         .promise();
       return { released: true };
-    } catch {
+    } catch (e) {
+      req.log.warn({ err: e, pk, sk }, "release failed");
       return { released: false };
     }
   }
@@ -130,11 +156,12 @@ class Service {
     try {
       return {
         eventId,
-        note: "demo - provide seat map via cache; held seats reflected by /hold TTL",
+        note:
+          "demo - provide seat map via cache; held seats reflected by /hold TTL",
       };
     } catch (e) {
       req.log.error(e);
-      return reply.code(500).send({ error: "seats_fetch_failed" });
+      return reply.code(500).send({ error: "seats_fetch_failed", message: "failed to fetch seats" });
     }
   }
 }
@@ -145,6 +172,12 @@ await app.register(openapiGlue, {
   serviceHandlers: new Service(),
   prefix: "",
 });
+
+// (선택) 운영에서 Redis가 필수라면 Fail‑Fast
+if (process.env.REDIS_REQUIRED === "true" && !redis) {
+  app.log.error("[FATAL] Redis is required but not configured.");
+  process.exit(1);
+}
 
 const port = Number(process.env.PORT || 3000);
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {

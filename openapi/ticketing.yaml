@@ -1,3 +1,4 @@
+# openapi/ticketing.yaml
 openapi: 3.1.0
 info:
   title: Ticketing API
@@ -106,6 +107,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: cache_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   /public/room-status:
     get:
@@ -127,12 +133,17 @@ paths:
                 properties:
                   ready: { type: boolean }
                   leftSec: { type: integer }
+        "503":
+          description: cache_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   /public/hold:
     post:
       operationId: holdSeat
       tags: [public]
-      summary: Hold a seat
+      summary: 좌석 홀드(대기열 통과 후 단기 점유)
       parameters:
         - in: header
           name: x-room-token
@@ -162,7 +173,8 @@ paths:
           description: bad_request
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: room_expired
           content:
@@ -170,6 +182,17 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "409":
           description: seat_already_held_or_sold
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: Internal Server Error (DDB failure)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: cache_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -198,6 +221,11 @@ paths:
                 type: object
                 properties:
                   released: { type: boolean }
+        "503":
+          description: cache_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   /public/seats/{eventId}:
     get:

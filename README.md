@@ -39,12 +39,18 @@ aws-ticket-tps-example/
 │ ├── 07_cloudfront.sh # CloudFront 배포
 │ └── 08_db_init.sh # DB 스키마 초기화
 │
-├── load/ # 로드 테스트 및 시나리오
-│ ├── e2e/ # E2E 시나리오 러너
-│ ├── scenarios/ # 부하 시나리오 YAML
-│ ├── worker_ec2/ # EC2 기반 로드봇 워커
-│ ├── 10_launch_workers.sh
-│ └── 20_collect_and_report.sh
+│ test/
+│ ├─ e2e/                      # 계약/기능 중심 E2E 러너 (Playwright)
+│ │  ├─ scripts/               # 실행 보조 유틸
+│ │  ├─ helpers/               # 공통 검증/HTTP 유틸
+│ │  ├─ fixtures/              # 테스트 데이터(유저/이벤트/좌석 등)
+│ │  ├─ specs/                 # 스펙(스모크/계약/E2E 흐름)
+│ │  └─ reports/               # Playwright HTML 리포트 출력
+│ │
+│ └─ loadtestbot/              # 최대 지속 TPS 산출(분산 부하 + 리포트)
+│    ├─ scenarios/             # k6 시나리오
+│    ├─ scripts/               # 분산 실행/수집/리포트
+│    └─ reports/               # TPS 리포트(.md) 출력
 │
 ├── openapi/ # API 계약 문서
 │ └── ticketing.yaml
@@ -190,6 +196,31 @@ sequenceDiagram
 
 - `load/e2e/scenario_e2e.json` 의 `base.public`/`base.confirm`를 ALB 또는 CloudFront 도메인으로 설정
 - `make e2e-run` 실행 후 `load/e2e/result.json`으로 요약 지표 확인
+
+### env.sh → test/.env 동기화 스크립트
+
+```bash
+tools/sync-dotenv.sh
+```
+
+### 절차 요약
+
+```bash
+# 1) env.sh 로드 및 .env 동기화
+bash tools/sync-dotenv.sh
+
+# 2) e2e
+cd test/e2e
+npm i && npx playwright install --with-deps
+npm run pretest && npm run test:smoke
+
+# 3) loadtestbot
+cd ../loadtestbot
+npm i
+npm run ecs:run            # 또는 위 '지역별 워커 수에 맞춘 실행' 예시
+node scripts/collect-cloudwatch.js > /tmp/k6.json
+npm run report -- /tmp/k6.json
+```
 
 ## 라이선스
 
