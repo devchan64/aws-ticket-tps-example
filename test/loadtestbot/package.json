@@ -1,0 +1,21 @@
+{
+  "name": "aws-ticket-tps-loadtestbot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "node scripts/resolve-alb-dns.js && node scripts/wait-services.js",
+    "local:ping": "docker run --rm -v $PWD:/scripts -w /scripts grafana/k6 run scenarios/ping.k6.js",
+    "local:reserve": "docker run --rm -v $PWD:/scripts -w /scripts grafana/k6 run scenarios/reserve-flow.k6.js",
+    "ecs:run": "node scripts/orchestrate-ecs.js",
+    "ecs:collect": "node scripts/collect-cloudwatch.js",
+    "report": "node scripts/gen-report.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.663.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.663.0",
+    "@aws-sdk/client-ecs": "^3.663.0",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
+    "yaml": "^2.5.1"
+  }
+}
