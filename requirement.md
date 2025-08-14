@@ -21,8 +21,8 @@
 ### 3.1 주요 컴포넌트
 
 - **ECS Fargate (ap-northeast-1, ap-northeast-2)**
-  - Public API 서비스 (`ticket-public`)
-  - Confirm API 서비스 (`ticket-confirm`)
+  - Public API 서비스 (`ticket-public-api`)
+  - Confirm API 서비스 (`ticket-confirm-api`)
   - Confirm Worker 서비스 (`ticket-worker`)
 - **네트워크**
   - VPC, Private/Public Subnet, NAT Gateway, Security Group
